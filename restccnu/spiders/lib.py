@@ -15,11 +15,8 @@ import base64
 import requests
 import datetime
 from bs4 import BeautifulSoup
-from . import lib_search_url
-from . import lib_me_url
-from . import lib_detail_url
-from . import douban_url
-from . import headers
+from . import lib_search_url, lib_me_url, lib_detail_url
+from . import lib_renew_url, douban_url, headers
 from . import proxy
 
 
@@ -29,7 +26,7 @@ def search_books(keyword):
     :args:
         - keyword: 搜索关键字
     :rv:
-    
+
     搜索图书结果
 
     :20161017:
@@ -72,9 +69,13 @@ def book_me(s):
     me_url = lib_me_url
     r = s.get(me_url, headers=headers)
     soup = BeautifulSoup(r.content, 'lxml', from_encoding='utf-8')
+    bids = []
+    a_tags = soup.find_all('a', class_="blue")
+    for a_tag in a_tags:
+        bids.append(a_tag.get('href').split("=")[-1])
     _my_book_list = soup.find_all('tr')[1:]
     my_book_list = []
-    for _book in _my_book_list:
+    for index, _book in enumerate(_my_book_list):
         text = _book.text.split('\n')
         itime = text[3].strip(); otime = text[4].strip()
         date_itime = datetime.datetime.strptime(itime, "%Y-%m-%d")
@@ -82,24 +83,66 @@ def book_me(s):
         ctime = datetime.datetime.now().strftime("%Y-%m-%d")
         dtime = time.mktime(date_otime.timetuple()) - \
                 time.mktime(datetime.datetime.now().timetuple())
+
+        renew_button = _book.find('input')['onclick']
+        renew_info = [eval(i) for i in renew_button[renew_button.index('(')+1:\
+                                       renew_button.index(')')].split(',')]
+        bar_code = renew_info[0]
+        check = renew_info[1]
+
         my_book_list.append({
             'book': text[2].split('/')[0].strip(),
             'author': text[2].split('/')[-1].strip(),
             'itime': str(itime),
             "otime": str(otime),
             "time": int(dtime/(24*60*60)),
-            "room": text[6].strip()
+            "room": text[6].strip(),
+            "bar_code": bar_code,
+            "check": check,
+            "id": bids[index]
         })
     return my_book_list
 
 
-def get_book(id, book, author):
+def renew_book(s, bar_code, check):
+    """
+    :function: renew_book
+    :args:
+        - s: 爬虫session对象
+    :rv:
+
+    续借函数
+    """
+    renew_url = lib_renew_url
+    now = int(time.time()*1000)
+    payload = {
+            'bar_code': bar_code,
+            'check': check,
+            'time': now
+            }
+    res = s.post(renew_url, params=payload)
+    res_color = BeautifulSoup(res.content, "lxml", from_encoding='utf-8').find('font')['color']
+
+    if res_color == 'green':
+        res_code = 200
+    else:
+        res_string = BeautifulSoup(res.content, "lxml", from_encoding='utf-8').string.strip()
+        early = u'\u4e0d\u5230\u7eed\u501f\u65f6\u95f4\uff0c\u4e0d\u5f97\u7eed\u501f\uff01'
+        unavailable = u'\u8d85\u8fc7\u6700\u5927\u7eed\u501f\u6b21\u6570\uff0c\u4e0d\u5f97\u7eed\u501f\uff01'
+        if res_string == early:
+            res_code = 406
+        elif res_string == unavailable:
+            res_code = 403
+        else:
+            res_code = 400
+    return res_code
+
+
+def get_book(id):
     """
     :function: get_book
     :args:
         - id: 图书id
-        - book: 图书名称
-        - author: 作者名称
 
     图书详情
     """
@@ -107,7 +150,9 @@ def get_book(id, book, author):
     r = requests.get(detail_url, headers=headers, proxies=proxy)
     soup = BeautifulSoup(r.content, 'lxml', from_encoding='utf-8')
 
-    book = book; author = author
+    # book = book; author = author
+    book = str(soup.dd.a.string)
+    author = str(soup.dd.text.split("/")[-1])
     isbn = ''.join(soup.find(
         'ul', class_="sharing_zy").li.a.get('href').split('/')[-2].split('-'))
     douban = douban_url % isbn
